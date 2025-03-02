@@ -1,0 +1,25 @@
+# Data files
+data/raw_data/*
+data/processed_data/*
+# But keep the directory structure
+!data/raw_data/.gitkeep
+!data/processed_data/.gitkeep
+
+# Logs
+*.log
+pipeline.log
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+.env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
