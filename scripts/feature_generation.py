@@ -14,6 +14,52 @@ logging.basicConfig(
 )
 logger = logging.getLogger('feature_generation')
 
+def minutes_to_pace_format(minutes):
+    """Convert numeric minutes to consistent MM'SS" format"""
+    if pd.isna(minutes) or not np.isfinite(minutes):
+        return ''
+    
+    try:
+        mins = int(minutes)
+        secs = int(round((minutes - mins) * 60))
+        
+        # Handle case where seconds round to 60
+        if secs == 60:
+            mins += 1
+            secs = 0
+            
+        return f"{mins}'{secs:02d}\""
+    except (ValueError, TypeError):
+        return ''
+
+def pace_to_minutes(pace_str):
+    """Convert pace string to numeric minutes"""
+    if pd.isna(pace_str) or pace_str == '' or pace_str is None:
+        return np.nan
+    
+    try:
+        if isinstance(pace_str, str):
+            # Handle MM'SS" format
+            if "'" in pace_str and '"' in pace_str:
+                parts = pace_str.split("'")
+                minutes = int(parts[0])
+                seconds = int(parts[1].replace('"', ''))
+                return minutes + seconds/60
+            # Handle MM:SS format
+            elif ':' in pace_str:
+                parts = pace_str.split(':')
+                minutes = int(parts[0])
+                seconds = int(parts[1])
+                return minutes + seconds/60
+            else:
+                # Already a number
+                return float(pace_str)
+        else:
+            # Already a number
+            return float(pace_str)
+    except (ValueError, TypeError, IndexError):
+        return np.nan
+
 def generate_features(cleaned_csv: str, output_csv: str):
     """
     Loads cleaned data, creates new features, and saves the feature-enriched dataset.
@@ -37,28 +83,37 @@ def generate_features(cleaned_csv: str, output_csv: str):
         df = pd.read_csv(cleaned_csv)
         logger.info(f"Loaded cleaned data with {len(df)} rows")
         
-        # 2. Calculate pace from speed if pace is missing but speed exists
-        if 'pace' not in df.columns and 'average_speed' in df.columns:
-            # Pace is typically minutes per distance unit (e.g., min/mile or min/km)
-            # Assuming speed is in distance units per hour (mph or kph)
-            # Replace infinities or zeros with NaN first
-            safe_speed = df['average_speed'].replace([np.inf, -np.inf, 0], np.nan)
-            df['pace'] = 60 / safe_speed  # Convert to minutes per distance unit
-            logger.info("Calculated pace from average_speed")
+        # SIMPLIFIED PACE CALCULATION - ONE TIME ONLY
+
+        # Calculate pace once, at the beginning
+        if 'pace' not in df.columns:
+            logger.info("Calculating pace")
+            if 'elapsed_time' in df.columns and 'distance' in df.columns:
+                # Replace zeros in distance with NaN to avoid division by zero
+                safe_distance = df['distance'].replace(0, np.nan)
+                
+                # Calculate pace: elapsed_time (seconds) ÷ 60 = minutes, then divide by distance
+                df['pace_numeric'] = (df['elapsed_time'] / 60) / safe_distance
+                df['pace'] = df['pace_numeric'].apply(minutes_to_pace_format)
+                logger.info("Calculated pace from elapsed_time and distance")
+            elif 'average_speed' in df.columns:
+                # Replace zeros in speed with NaN to avoid division by zero
+                safe_speed = df['average_speed'].replace([np.inf, -np.inf, 0], np.nan)
+                
+                # Calculate pace: 60 minutes/hour ÷ speed
+                df['pace_numeric'] = 60 / safe_speed
+                df['pace'] = df['pace_numeric'].apply(minutes_to_pace_format)
+                logger.info("Calculated pace from average_speed")
+        # Convert existing pace to numeric if needed
+        elif 'pace' in df.columns and 'pace_numeric' not in df.columns:
+            df['pace_numeric'] = df['pace'].apply(pace_to_minutes)
+            logger.info("Converted existing pace to numeric values")
         
-        # If we have elapsed_time and distance but no pace, calculate it
-        if 'pace' not in df.columns and 'elapsed_time' in df.columns and 'distance' in df.columns:
-            # Replace zeros in distance with NaN to avoid division by zero
-            safe_distance = df['distance'].replace(0, np.nan)
-            # Assuming elapsed_time is in seconds and distance is in miles or km
-            df['pace'] = (df['elapsed_time'] / 60) / safe_distance  # Convert to minutes per distance unit
-            logger.info("Calculated pace from elapsed_time and distance")
-        
-        # 3. Ensure date is in datetime format for time-based features
+        # 2. Ensure date is in datetime format for time-based features
         if 'date' in df.columns:
             df['date'] = pd.to_datetime(df['date'])
         
-        # 4. Update runner_id to start at 01
+        # 3. Update runner_id to start at 01
         if 'runner_id' in df.columns:
             # Get unique runner IDs
             unique_runners = df['runner_id'].unique()
@@ -68,109 +123,52 @@ def generate_features(cleaned_csv: str, output_csv: str):
             df['runner_id'] = df['runner_id'].map(runner_mapping)
             logger.info("Updated runner_id to start at 01")
         
-        # 5. Sort by runner_id and date for time-series features
+        # 4. Sort by runner_id and date for time-series features
         df = df.sort_values(by=['runner_id', 'date'])
         
-        # 6. Create week number feature
+        # 5. Create week number feature
         if 'date' in df.columns:
             df['week_number'] = df['date'].dt.isocalendar().week
             logger.info("Created week number feature")
         
-        # 7. Format pace columns in minute:second format (e.g., 7:03)
-        pace_columns = [col for col in df.columns if 'pace' in col]
+        # 6. Format all pace columns consistently
+        pace_columns = [col for col in df.columns if 'pace' in col and 'numeric' not in col and not col.endswith('_str')]
         for col in pace_columns:
             if col in df.columns:
-                # First handle NaN and infinite values
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+                # Create a numeric version if it doesn't exist
+                numeric_col = f"{col}_numeric"
+                if numeric_col not in df.columns:
+                    # First try to convert from string format to numeric
+                    df[numeric_col] = df[col].apply(pace_to_minutes)
                 
-                # Create a mask for valid values
-                valid_mask = df[col].notna() & np.isfinite(df[col])
+                # Format all pace columns consistently
+                valid_mask = df[numeric_col].notna() & np.isfinite(df[numeric_col])
                 
-                # Initialize the formatted column with NaN
-                formatted_pace = pd.Series(index=df.index, dtype='object')
+                # Initialize with empty strings
+                df[col] = ''
                 
-                # Only process valid values
+                # Apply formatting only to valid values
                 if valid_mask.any():
-                    # Extract minutes (integer part) and seconds (fractional part * 60)
-                    minutes = df.loc[valid_mask, col].astype(float).astype(int)
-                    seconds = ((df.loc[valid_mask, col].astype(float) - minutes) * 60).round().astype(int)
-                    
-                    # Handle case where seconds = 60
-                    idx_60_seconds = seconds >= 60
-                    minutes.loc[idx_60_seconds] += 1
-                    seconds.loc[idx_60_seconds] -= 60
-                    
-                    # Format as MM:SS
-                    formatted_pace.loc[valid_mask] = minutes.astype(str) + ':' + seconds.astype(str).str.zfill(2)
+                    df.loc[valid_mask, col] = df.loc[valid_mask, numeric_col].apply(minutes_to_pace_format)
                 
-                # For invalid values, use a placeholder
-                formatted_pace.loc[~valid_mask] = np.nan
-                
-                # Update the column in the dataframe
-                df[col] = formatted_pace
-                logger.info(f"Formatted {col} in minute:second format")
+                logger.info(f"Formatted {col} using consistent MM'SS\" format")
         
-        # 8. Create lagged features (previous run metrics)
+        # 7. Create lagged features (previous run metrics)
         if 'runner_id' in df.columns:
             # Lagged pace
             if 'pace' in df.columns:
-                df['pace_previous'] = df.groupby('runner_id')['pace'].shift(1)
+                df['pace_previous_numeric'] = df.groupby('runner_id')['pace_numeric'].shift(1)
+                df['pace_previous'] = df['pace_previous_numeric'].apply(minutes_to_pace_format)
                 logger.info("Created lagged pace feature")
             
             # Pace difference from previous run
-            if 'pace' in df.columns and 'pace_previous' in df.columns:
-                # Need to convert string pace back to numeric for calculations
-                def pace_to_minutes(pace_str):
-                    try:
-                        if pd.isna(pace_str):
-                            return np.nan
-                        if ':' in str(pace_str):
-                            minutes, seconds = str(pace_str).split(':')
-                            return float(minutes) + float(seconds) / 60
-                        else:
-                            return float(pace_str)
-                    except:
-                        return np.nan
+            if 'pace' in df.columns and 'pace_previous_numeric' in df.columns:
+                df['pace_diff_numeric'] = df['pace_numeric'] - df['pace_previous_numeric']
                 
-                numeric_pace = df['pace'].apply(pace_to_minutes)
-                numeric_pace_prev = df['pace_previous'].apply(pace_to_minutes)
-                
-                # Calculate difference in numeric form
-                pace_diff_numeric = numeric_pace - numeric_pace_prev
-                
-                # Initialize the formatted column with NaN
-                formatted_diff = pd.Series(index=df.index, dtype='object')
-                
-                # Only process valid values
-                valid_mask = pace_diff_numeric.notna() & np.isfinite(pace_diff_numeric)
-                if valid_mask.any():
-                    # Format the difference
-                    minutes = pace_diff_numeric.loc[valid_mask].astype(float).astype(int)
-                    seconds = ((pace_diff_numeric.loc[valid_mask].astype(float) - minutes) * 60).round().astype(int)
-                    
-                    # Handle case where seconds = 60 or seconds = -60
-                    idx_60_seconds = seconds >= 60
-                    minutes.loc[idx_60_seconds] += 1
-                    seconds.loc[idx_60_seconds] -= 60
-                    
-                    idx_neg_60_seconds = seconds <= -60
-                    minutes.loc[idx_neg_60_seconds] -= 1
-                    seconds.loc[idx_neg_60_seconds] += 60
-                    
-                    # Handle negative seconds
-                    idx_neg_seconds = (seconds < 0) & (minutes > 0)
-                    minutes.loc[idx_neg_seconds] -= 1
-                    seconds.loc[idx_neg_seconds] += 60
-                    
-                    # Format as MM:SS or -MM:SS
-                    neg_mask = (minutes < 0) | ((minutes == 0) & (seconds < 0))
-                    seconds = seconds.abs()  # Ensure seconds are positive for formatting
-                    
-                    formatted_diff.loc[valid_mask & ~neg_mask] = minutes.loc[~neg_mask].astype(str) + ':' + seconds.loc[~neg_mask].astype(str).str.zfill(2)
-                    formatted_diff.loc[valid_mask & neg_mask] = '-' + minutes.loc[neg_mask].abs().astype(str) + ':' + seconds.loc[neg_mask].astype(str).str.zfill(2)
-                
-                # Update the column in the dataframe
-                df['pace_diff'] = formatted_diff
+                # Format as MM'SS" with sign
+                df['pace_diff'] = df['pace_diff_numeric'].apply(lambda x: 
+                    ('' if x >= 0 else '-') + 
+                    minutes_to_pace_format(abs(x)) if pd.notnull(x) else '')
                 logger.info("Created pace difference feature")
             
             # Lagged distance
@@ -185,16 +183,13 @@ def generate_features(cleaned_csv: str, output_csv: str):
             
             # 7-day rolling average pace
             if 'date' in df.columns and 'pace' in df.columns:
-                # Create a numeric pace column for calculations
-                df['numeric_pace'] = df['pace'].apply(pace_to_minutes)
-                
                 # Calculate rolling average on numeric pace
                 df_indexed = df.set_index('date')
-                rolling_pace = df_indexed.groupby('runner_id')['numeric_pace'].rolling('7D', min_periods=1).mean()
+                rolling_pace = df_indexed.groupby('runner_id')['pace_numeric'].rolling('7D', min_periods=1).mean()
                 rolling_pace = rolling_pace.reset_index()
                 
                 # Convert numeric rolling pace back to formatted string
-                numeric_7d_pace = rolling_pace['numeric_pace'].values
+                numeric_7d_pace = rolling_pace['pace_numeric'].values
                 
                 # Initialize the formatted column with NaN
                 formatted_7d_pace = pd.Series(index=df.index, dtype='object')
@@ -210,26 +205,20 @@ def generate_features(cleaned_csv: str, output_csv: str):
                     minutes.loc[idx_60_seconds] += 1
                     seconds.loc[idx_60_seconds] -= 60
                     
-                    formatted_7d_pace.loc[valid_mask] = minutes.astype(str) + ':' + seconds.astype(str).str.zfill(2)
+                    formatted_7d_pace.loc[valid_mask] = minutes.astype(str) + "'" + seconds.astype(str).str.zfill(2) + '"'
                 
                 df['7d_avg_pace'] = formatted_7d_pace
-                
-                # Drop the temporary numeric pace column
-                df = df.drop(columns=['numeric_pace'])
                 logger.info("Created 7-day rolling average pace")
             
             # 30-day rolling average pace
             if 'date' in df.columns and 'pace' in df.columns:
-                # Create a numeric pace column for calculations
-                df['numeric_pace'] = df['pace'].apply(pace_to_minutes)
-                
                 # Calculate rolling average on numeric pace
                 df_indexed = df.set_index('date')
-                rolling_pace_30d = df_indexed.groupby('runner_id')['numeric_pace'].rolling('30D', min_periods=1).mean()
+                rolling_pace_30d = df_indexed.groupby('runner_id')['pace_numeric'].rolling('30D', min_periods=1).mean()
                 rolling_pace_30d = rolling_pace_30d.reset_index()
                 
                 # Convert numeric rolling pace back to formatted string
-                numeric_30d_pace = rolling_pace_30d['numeric_pace'].values
+                numeric_30d_pace = rolling_pace_30d['pace_numeric'].values
                 
                 # Initialize the formatted column with NaN
                 formatted_30d_pace = pd.Series(index=df.index, dtype='object')
@@ -248,9 +237,6 @@ def generate_features(cleaned_csv: str, output_csv: str):
                     formatted_30d_pace.loc[valid_mask] = minutes.astype(str) + ':' + seconds.astype(str).str.zfill(2)
                 
                 df['30d_avg_pace'] = formatted_30d_pace
-                
-                # Drop the temporary numeric pace column
-                df = df.drop(columns=['numeric_pace'])
                 logger.info("Created 30-day rolling average pace")
             
             # 7-day total distance
@@ -297,11 +283,18 @@ def generate_features(cleaned_csv: str, output_csv: str):
             
             # 7-day rolling average heart rate
             if 'date' in df.columns and 'average_heart_rate' in df.columns:
+                # 7-day heart rate
                 df_indexed = df.set_index('date')
                 rolling_hr = df_indexed.groupby('runner_id')['average_heart_rate'].rolling('7D', min_periods=1).mean()
                 rolling_hr = rolling_hr.reset_index()
                 df['7d_avg_heart_rate'] = rolling_hr['average_heart_rate'].values
                 logger.info("Created 7-day rolling average heart rate")
+                
+                # 30-day heart rate
+                rolling_hr_30d = df_indexed.groupby('runner_id')['average_heart_rate'].rolling('30D', min_periods=1).mean()
+                rolling_hr_30d = rolling_hr_30d.reset_index()
+                df['30d_avg_heart_rate'] = rolling_hr_30d['average_heart_rate'].values
+                logger.info("Created 30-day rolling average heart rate")
             
             # 7-day rolling average elapsed time
             if 'date' in df.columns and 'elapsed_time' in df.columns:
@@ -350,8 +343,38 @@ def generate_features(cleaned_csv: str, output_csv: str):
                 rolling_grade_30d = rolling_grade_30d.reset_index()
                 df['30d_avg_grade'] = rolling_grade_30d['average_grade'].values
                 logger.info("Created 30-day rolling average grade")
+            
+            # 7-day and 30-day rolling average cadence
+            if 'date' in df.columns and 'average_cadence' in df.columns:
+                # 7-day cadence
+                df_indexed = df.set_index('date')
+                rolling_cadence = df_indexed.groupby('runner_id')['average_cadence'].rolling('7D', min_periods=1).mean()
+                rolling_cadence = rolling_cadence.reset_index()
+                df['7d_avg_cadence'] = rolling_cadence['average_cadence'].values
+                logger.info("Created 7-day rolling average cadence")
+                
+                # 30-day cadence
+                rolling_cadence_30d = df_indexed.groupby('runner_id')['average_cadence'].rolling('30D', min_periods=1).mean()
+                rolling_cadence_30d = rolling_cadence_30d.reset_index()
+                df['30d_avg_cadence'] = rolling_cadence_30d['average_cadence'].values
+                logger.info("Created 30-day rolling average cadence")
+            
+            # 7-day and 30-day rolling average distance
+            if 'date' in df.columns and 'distance' in df.columns:
+                # 7-day distance (average per run)
+                df_indexed = df.set_index('date')
+                rolling_distance = df_indexed.groupby('runner_id')['distance'].rolling('7D', min_periods=1).mean()
+                rolling_distance = rolling_distance.reset_index()
+                df['7d_avg_distance'] = rolling_distance['distance'].values
+                logger.info("Created 7-day rolling average distance")
+                
+                # 30-day distance (average per run)
+                rolling_distance_30d = df_indexed.groupby('runner_id')['distance'].rolling('30D', min_periods=1).mean()
+                rolling_distance_30d = rolling_distance_30d.reset_index()
+                df['30d_avg_distance'] = rolling_distance_30d['distance'].values
+                logger.info("Created 30-day rolling average distance")
         
-        # 9. Create time-based features
+        # 8. Create time-based features
         if 'date' in df.columns:
             # Extract day of week (0=Monday, 6=Sunday)
             df['day_of_week'] = df['date'].dt.dayofweek
@@ -365,17 +388,188 @@ def generate_features(cleaned_csv: str, output_csv: str):
             df['is_weekend'] = df['day_of_week'].apply(lambda x: 1 if x >= 5 else 0)
             logger.info("Created weekend indicator feature")
         
-        # 10. Calculate days since last run
+        # 9. Calculate days since last run
         if 'date' in df.columns:
             df['days_since_last_run'] = df.groupby('runner_id')['date'].diff().dt.days
             logger.info("Created days since last run feature")
         
-        # 11. Fill NaN values in the newly created features
+        # 10. Fill NaN values in the newly created features
         # For lagged and diff features, we can't meaningfully fill the first entry
         # But for rolling features, we've used min_periods=1 so they should be filled
         
+        # 11. Reorganize columns to group related metrics together
+        logger.info("Reorganizing columns to group related metrics together")
+        
+        # First, get all column names
+        all_columns = df.columns.tolist()
+
+        # Identify key column groups that should appear first
+        id_columns = [col for col in all_columns if any(x in col.lower() for x in ['id', 'date', 'runner'])]
+        basic_metrics = ['distance', 'elapsed_time', 'moving_time', 'pace', 'average_speed', 'max_speed']
+        heart_rate_metrics = [col for col in all_columns if 'heart_rate' in col.lower()]
+        cadence_metrics = [col for col in all_columns if 'cadence' in col.lower()]
+        elevation_metrics = [col for col in all_columns if any(x in col.lower() for x in ['elevation', 'grade'])]
+        effort_metrics = [col for col in all_columns if 'effort' in col.lower()]
+        time_metrics = [col for col in all_columns if any(x in col.lower() for x in ['week', 'day', 'month', 'weekend'])]
+
+        # Create pairs of related 7d and 30d metrics
+        def pair_metrics(metric_list):
+            base_metrics = []
+            for col in metric_list:
+                if '7d_' in col or '30d_' in col:
+                    # Extract the base metric name
+                    base_name = col.split('7d_')[-1] if '7d_' in col else col.split('30d_')[-1]
+                    if base_name not in base_metrics:
+                        base_metrics.append(base_name)
+        
+            # Group related metrics
+            paired_metrics = []
+            for base in base_metrics:
+                seven_day = [col for col in metric_list if f'7d_{base}' in col]
+                thirty_day = [col for col in metric_list if f'30d_{base}' in col]
+                paired_metrics.extend(seven_day + thirty_day)
+        
+            return paired_metrics
+
+        # Get the remaining columns that aren't in any special group
+        paired_columns = pair_metrics(all_columns)
+        remaining_cols = [col for col in all_columns if col not in id_columns + basic_metrics + 
+                         heart_rate_metrics + cadence_metrics + elevation_metrics + 
+                         effort_metrics + time_metrics + paired_columns]
+
+        # Create the final column order
+        ordered_columns = (
+            id_columns + 
+            basic_metrics + 
+            heart_rate_metrics + 
+            cadence_metrics + 
+            elevation_metrics +
+            effort_metrics +
+            time_metrics +
+            paired_columns +
+            remaining_cols
+        )
+
+        # Check if we have all columns accounted for
+        missing_cols = [col for col in all_columns if col not in ordered_columns]
+        if missing_cols:
+            ordered_columns.extend(missing_cols)
+            logger.warning(f"Found {len(missing_cols)} columns that weren't in any grouping: {missing_cols}")
+
+        # Reorder the DataFrame
+        df = df[ordered_columns]
+        logger.info("Reorganized columns to group related metrics together")
+        
+        # FIXED CONSOLIDATED ROLLING METRICS CALCULATION
+        # Replace the previous rolling metrics code with this
+
+        # Define all the metrics we want to calculate rolling averages for
+        rolling_metrics = {
+            'average_heart_rate': 'heart_rate',
+            'average_cadence': 'cadence',
+            'distance': 'distance',
+            'elapsed_time': 'elapsed_time',
+            'relative_effort': 'relative_effort',
+            'average_grade': 'grade',
+            'pace_numeric': 'pace'  # Special handling for pace
+        }
+
+        # Calculate all rolling metrics in one consistent way
+        if 'runner_id' in df.columns:
+            logger.info("Calculating rolling metrics based on last N runs")
+            
+            # Check for and safely remove existing rolling metrics to avoid duplicates
+            for col in df.columns.tolist():  # Create a copy of columns to avoid modification during iteration
+                if '7d_avg_' in col or '30d_avg_' in col or '7d_total_' in col or '30d_total_' in col:
+                    if col in df.columns:  # Extra check to make sure column still exists
+                        try:
+                            df = df.drop(columns=[col])
+                            logger.info(f"Removed existing column: {col}")
+                        except KeyError:
+                            logger.warning(f"Tried to remove {col} but it was already gone")
+            
+            # Now calculate all metrics in a consistent way
+            for source_col, metric_name in rolling_metrics.items():
+                if source_col in df.columns:
+                    # Last 7 runs average
+                    df[f'7d_avg_{metric_name}'] = df.groupby('runner_id')[source_col] \
+                                                .rolling(window=7, min_periods=1).mean() \
+                                                .reset_index(level=0, drop=True)
+                    
+                    # Last 30 runs average
+                    df[f'30d_avg_{metric_name}'] = df.groupby('runner_id')[source_col] \
+                                                .rolling(window=30, min_periods=1).mean() \
+                                                .reset_index(level=0, drop=True)
+                    
+                    logger.info(f"Created rolling averages for {metric_name}")
+            
+            # Special handling for total distance (sum instead of average)
+            if 'distance' in df.columns:
+                df['7d_total_distance'] = df.groupby('runner_id')['distance'] \
+                                        .rolling(window=7, min_periods=1).sum() \
+                                        .reset_index(level=0, drop=True)
+                
+                df['30d_total_distance'] = df.groupby('runner_id')['distance'] \
+                                        .rolling(window=30, min_periods=1).sum() \
+                                        .reset_index(level=0, drop=True)
+                
+                logger.info("Created total distance metrics")
+            
+            # Format pace metrics if they exist
+            if 'pace_numeric' in df.columns and '7d_avg_pace' in df.columns:
+                df['7d_avg_pace'] = df['7d_avg_pace'].apply(minutes_to_pace_format)
+                
+            if 'pace_numeric' in df.columns and '30d_avg_pace' in df.columns:
+                df['30d_avg_pace'] = df['30d_avg_pace'].apply(minutes_to_pace_format)
+                
+            if 'pace_numeric' in df.columns:
+                logger.info("Formatted pace rolling averages")
+            
+            # Special handling for pace (needs to be calculated from pace_numeric)
+            logger.info("Calculating rolling average pace metrics")
+            
+            # Last 7 runs average pace
+            df['7d_avg_pace_numeric'] = df.groupby('runner_id')['pace_numeric'] \
+                                    .rolling(window=7, min_periods=1).mean() \
+                                    .reset_index(level=0, drop=True)
+            
+            # Last 30 runs average pace
+            df['30d_avg_pace_numeric'] = df.groupby('runner_id')['pace_numeric'] \
+                                     .rolling(window=30, min_periods=1).mean() \
+                                     .reset_index(level=0, drop=True)
+            
+            # Format pace into proper string format
+            df['7d_avg_pace'] = df['7d_avg_pace_numeric'].apply(minutes_to_pace_format)
+            df['30d_avg_pace'] = df['30d_avg_pace_numeric'].apply(minutes_to_pace_format)
+            
+            # Remove the numeric versions after formatting
+            df = df.drop(columns=['7d_avg_pace_numeric', '30d_avg_pace_numeric'])
+            
+            logger.info("Created and formatted rolling average pace metrics")
+        
         # 12. Save the feature-enriched data
         os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+        
+        # Force removal of ALL pace-related numeric columns
+        logger.info("Final cleanup: explicitly removing all pace numeric columns")
+        columns_to_keep = [col for col in df.columns if not ('pace' in col.lower() and 'numeric' in col.lower())]
+        df = df[columns_to_keep]  # Keep only non-pace-numeric columns
+
+        # Double-check to make sure they're gone
+        remaining_pace_numeric = [col for col in df.columns if 'pace' in col.lower() and 'numeric' in col.lower()]
+        if remaining_pace_numeric:
+            logger.warning(f"WARNING: Still found pace numeric columns after cleanup: {remaining_pace_numeric}")
+            # Force remove them again with a different method
+            for col in remaining_pace_numeric:
+                try:
+                    del df[col]
+                    logger.info(f"Forcibly deleted column: {col}")
+                except:
+                    logger.error(f"Failed to delete column: {col}")
+
+        # Log final column list before saving
+        logger.info(f"Final columns before saving: {df.columns.tolist()}")
+        
         df.to_csv(output_csv, index=False)
         logger.info(f"Saved feature-enriched data to {output_csv} with {len(df)} rows and {len(df.columns)} columns")
         
