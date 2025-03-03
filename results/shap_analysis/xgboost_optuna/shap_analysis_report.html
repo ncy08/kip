@@ -1,0 +1,113 @@
+
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>SHAP Analysis Report</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; }
+                h1, h2 { color: #2c3e50; }
+                .container { max-width: 1200px; margin: 0 auto; }
+                .plot { margin: 20px 0; text-align: center; }
+                .plot img { max-width: 100%; border: 1px solid #ddd; }
+                .description { margin: 10px 0 30px 0; line-height: 1.5; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>SHAP Analysis Report</h1>
+                <p>This report shows the SHAP (SHapley Additive exPlanations) analysis 
+                for the XGBoost pace prediction model.</p>
+        
+                <h2>Analysis Information</h2>
+                <p>Sample size used for SHAP analysis: 2000<br>
+                Number of features analyzed: 1888</p>
+        
+                <h2>Global Feature Importance</h2>
+                <p class="description">
+                    This bar chart shows the average impact of each feature on model output magnitude.
+                    Features are ranked by their absolute SHAP values, indicating which features
+                    are most influential across all predictions.
+                </p>
+                <div class="plot">
+                    <img src="shap_importance_bar.png" alt="SHAP Feature Importance">
+                </div>
+        
+                <h2>Feature Impact Distribution</h2>
+                <p class="description">
+                    This summary plot shows the distribution of SHAP values for each feature.
+                    Each point represents a single prediction. The color indicates whether
+                    that feature value was high (red) or low (blue) for that observation.
+                    Features are ordered by importance.
+                </p>
+                <div class="plot">
+                    <img src="shap_impact_distribution.png" alt="SHAP Impact Distribution">
+                </div>
+        
+                <h2>Feature Dependence Plots</h2>
+                <p class="description">
+                    These plots show how the SHAP value (i.e., the impact on the prediction)
+                    changes as the feature value changes. This helps understand the relationship
+                    between feature values and their effect on predictions.
+                </p>
+        
+                <h3>30d avg cadence</h3>
+                <div class="plot">
+                    <img src="shap_dependence_30d_avg_cadence.png" alt="SHAP Dependence 30d avg cadence">
+                </div>
+            
+                <h3>moving time</h3>
+                <div class="plot">
+                    <img src="shap_dependence_moving_time.png" alt="SHAP Dependence moving time">
+                </div>
+            
+                <h3>distance</h3>
+                <div class="plot">
+                    <img src="shap_dependence_distance.png" alt="SHAP Dependence distance">
+                </div>
+            
+                <h3>average cadence</h3>
+                <div class="plot">
+                    <img src="shap_dependence_average_cadence.png" alt="SHAP Dependence average cadence">
+                </div>
+            
+                <h3>30d avg moving time</h3>
+                <div class="plot">
+                    <img src="shap_dependence_30d_avg_moving_time.png" alt="SHAP Dependence 30d avg moving time">
+                </div>
+            
+                <h2>Individual Prediction Explanations</h2>
+                <p class="description">
+                    These waterfall plots show how individual features contribute to specific predictions.
+                    Starting from the base value (expected value), each feature either pushes the prediction
+                    higher (red) or lower (blue), resulting in the final prediction.
+                </p>
+        
+                <h3>Sample 4 Explanation</h3>
+                <div class="plot">
+                    <img src="shap_waterfall_sample_4.png" alt="SHAP Waterfall 4">
+                </div>
+            
+                <h3>Sample 0 Explanation</h3>
+                <div class="plot">
+                    <img src="shap_waterfall_sample_0.png" alt="SHAP Waterfall 0">
+                </div>
+            
+                <h3>Sample 1 Explanation</h3>
+                <div class="plot">
+                    <img src="shap_waterfall_sample_1.png" alt="SHAP Waterfall 1">
+                </div>
+            
+                <h3>Sample 3 Explanation</h3>
+                <div class="plot">
+                    <img src="shap_waterfall_sample_3.png" alt="SHAP Waterfall 3">
+                </div>
+            
+                <h3>Sample 2 Explanation</h3>
+                <div class="plot">
+                    <img src="shap_waterfall_sample_2.png" alt="SHAP Waterfall 2">
+                </div>
+            
+            </div>
+        </body>
+        </html>
+        

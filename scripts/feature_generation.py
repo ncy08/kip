@@ -83,19 +83,24 @@ def generate_features(cleaned_csv: str, output_csv: str):
         df = pd.read_csv(cleaned_csv)
         logger.info(f"Loaded cleaned data with {len(df)} rows")
         
+        # MULTIPLY AVERAGE CADENCE BY 2 (convert from steps per minute for one foot to total steps per minute)
+        if 'average_cadence' in df.columns:
+            logger.info("Multiplying average_cadence by 2 to get total steps per minute")
+            df['average_cadence'] = df['average_cadence'] * 2
+        
         # SIMPLIFIED PACE CALCULATION - ONE TIME ONLY
 
         # Calculate pace once, at the beginning
         if 'pace' not in df.columns:
             logger.info("Calculating pace")
-            if 'elapsed_time' in df.columns and 'distance' in df.columns:
+            if 'moving_time' in df.columns and 'distance' in df.columns:
                 # Replace zeros in distance with NaN to avoid division by zero
                 safe_distance = df['distance'].replace(0, np.nan)
                 
-                # Calculate pace: elapsed_time (seconds) ÷ 60 = minutes, then divide by distance
-                df['pace_numeric'] = (df['elapsed_time'] / 60) / safe_distance
+                # Calculate pace: moving_time (seconds) ÷ 60 = minutes, then divide by distance
+                df['pace_numeric'] = (df['moving_time'] / 60) / safe_distance
                 df['pace'] = df['pace_numeric'].apply(minutes_to_pace_format)
-                logger.info("Calculated pace from elapsed_time and distance")
+                logger.info("Calculated pace from moving_time and distance")
             elif 'average_speed' in df.columns:
                 # Replace zeros in speed with NaN to avoid division by zero
                 safe_speed = df['average_speed'].replace([np.inf, -np.inf, 0], np.nan)
@@ -296,21 +301,21 @@ def generate_features(cleaned_csv: str, output_csv: str):
                 df['30d_avg_heart_rate'] = rolling_hr_30d['average_heart_rate'].values
                 logger.info("Created 30-day rolling average heart rate")
             
-            # 7-day rolling average elapsed time
-            if 'date' in df.columns and 'elapsed_time' in df.columns:
+            # 7-day rolling average moving time
+            if 'date' in df.columns and 'moving_time' in df.columns:
                 df_indexed = df.set_index('date')
-                rolling_time = df_indexed.groupby('runner_id')['elapsed_time'].rolling('7D', min_periods=1).mean()
+                rolling_time = df_indexed.groupby('runner_id')['moving_time'].rolling('7D', min_periods=1).mean()
                 rolling_time = rolling_time.reset_index()
-                df['7d_avg_elapsed_time'] = rolling_time['elapsed_time'].values
-                logger.info("Created 7-day rolling average elapsed time")
+                df['7d_avg_moving_time'] = rolling_time['moving_time'].values
+                logger.info("Created 7-day rolling average moving time")
             
-            # 30-day rolling average elapsed time
-            if 'date' in df.columns and 'elapsed_time' in df.columns:
+            # 30-day rolling average moving time
+            if 'date' in df.columns and 'moving_time' in df.columns:
                 df_indexed = df.set_index('date')
-                rolling_time_30d = df_indexed.groupby('runner_id')['elapsed_time'].rolling('30D', min_periods=1).mean()
+                rolling_time_30d = df_indexed.groupby('runner_id')['moving_time'].rolling('30D', min_periods=1).mean()
                 rolling_time_30d = rolling_time_30d.reset_index()
-                df['30d_avg_elapsed_time'] = rolling_time_30d['elapsed_time'].values
-                logger.info("Created 30-day rolling average elapsed time")
+                df['30d_avg_moving_time'] = rolling_time_30d['moving_time'].values
+                logger.info("Created 30-day rolling average moving time")
             
             # 7-day rolling average relative effort
             if 'date' in df.columns and 'relative_effort' in df.columns:
@@ -405,7 +410,7 @@ def generate_features(cleaned_csv: str, output_csv: str):
 
         # Identify key column groups that should appear first
         id_columns = [col for col in all_columns if any(x in col.lower() for x in ['id', 'date', 'runner'])]
-        basic_metrics = ['distance', 'elapsed_time', 'moving_time', 'pace', 'average_speed', 'max_speed']
+        basic_metrics = ['distance', 'moving_time', 'max_speed']
         heart_rate_metrics = [col for col in all_columns if 'heart_rate' in col.lower()]
         cadence_metrics = [col for col in all_columns if 'cadence' in col.lower()]
         elevation_metrics = [col for col in all_columns if any(x in col.lower() for x in ['elevation', 'grade'])]
@@ -461,22 +466,22 @@ def generate_features(cleaned_csv: str, output_csv: str):
         logger.info("Reorganized columns to group related metrics together")
         
         # FIXED CONSOLIDATED ROLLING METRICS CALCULATION
-        # Replace the previous rolling metrics code with this
-
+        # Replace the previous rolling metrics code with this date-based approach
+        
         # Define all the metrics we want to calculate rolling averages for
         rolling_metrics = {
             'average_heart_rate': 'heart_rate',
             'average_cadence': 'cadence',
             'distance': 'distance',
-            'elapsed_time': 'elapsed_time',
+            'moving_time': 'moving_time',
             'relative_effort': 'relative_effort',
             'average_grade': 'grade',
             'pace_numeric': 'pace'  # Special handling for pace
         }
-
-        # Calculate all rolling metrics in one consistent way
-        if 'runner_id' in df.columns:
-            logger.info("Calculating rolling metrics based on last N runs")
+        
+        # Calculate all rolling metrics based on date windows
+        if 'runner_id' in df.columns and 'date' in df.columns:
+            logger.info("Calculating rolling metrics based on 7-day and 30-day windows")
             
             # Check for and safely remove existing rolling metrics to avoid duplicates
             for col in df.columns.tolist():  # Create a copy of columns to avoid modification during iteration
@@ -488,64 +493,112 @@ def generate_features(cleaned_csv: str, output_csv: str):
                         except KeyError:
                             logger.warning(f"Tried to remove {col} but it was already gone")
             
-            # Now calculate all metrics in a consistent way
+            # Make sure date is datetime type
+            df['date'] = pd.to_datetime(df['date'])
+            
+            # Sort by runner_id and date
+            df = df.sort_values(['runner_id', 'date'])
+            
+            # Temporarily set date as index for time-based rolling windows
+            df_indexed = df.set_index('date')
+            
+            # Now calculate all metrics in a consistent way using time windows
             for source_col, metric_name in rolling_metrics.items():
                 if source_col in df.columns:
-                    # Last 7 runs average
-                    df[f'7d_avg_{metric_name}'] = df.groupby('runner_id')[source_col] \
-                                                .rolling(window=7, min_periods=1).mean() \
-                                                .reset_index(level=0, drop=True)
-                    
-                    # Last 30 runs average
-                    df[f'30d_avg_{metric_name}'] = df.groupby('runner_id')[source_col] \
-                                                .rolling(window=30, min_periods=1).mean() \
-                                                .reset_index(level=0, drop=True)
-                    
-                    logger.info(f"Created rolling averages for {metric_name}")
+                    try:
+                        # Last 7 days average
+                        rolling_7d = df_indexed.groupby('runner_id')[source_col] \
+                                                .rolling('7D', min_periods=1).mean()
+                        
+                        # Last 30 days average
+                        rolling_30d = df_indexed.groupby('runner_id')[source_col] \
+                                                 .rolling('30D', min_periods=1).mean()
+                        
+                        # Reset index to get back the date column
+                        rolling_7d = rolling_7d.reset_index()
+                        rolling_30d = rolling_30d.reset_index()
+                        
+                        # Create a mapping from (runner_id, date) to the calculated values
+                        mapping_7d = dict(zip(zip(rolling_7d['runner_id'], rolling_7d['date']), rolling_7d[source_col]))
+                        mapping_30d = dict(zip(zip(rolling_30d['runner_id'], rolling_30d['date']), rolling_30d[source_col]))
+                        
+                        # Create keys for mapping
+                        df_keys = list(zip(df['runner_id'], df['date']))
+                        
+                        # Map the values back to the original dataframe
+                        df[f'7d_avg_{metric_name}'] = [mapping_7d.get(key, np.nan) for key in df_keys]
+                        df[f'30d_avg_{metric_name}'] = [mapping_30d.get(key, np.nan) for key in df_keys]
+                        
+                        logger.info(f"Created time-based rolling averages for {metric_name}")
+                    except Exception as e:
+                        logger.error(f"Error calculating rolling averages for {metric_name}: {str(e)}")
+                
+                # Special handling for total distance (sum instead of average)
+                if 'distance' in df.columns:
+                    try:
+                        # Last 7 days total distance
+                        total_dist_7d = df_indexed.groupby('runner_id')['distance'] \
+                                                  .rolling('7D', min_periods=1).sum()
+                        
+                        # Last 30 days total distance
+                        total_dist_30d = df_indexed.groupby('runner_id')['distance'] \
+                                                   .rolling('30D', min_periods=1).sum()
+                        
+                        # Reset index
+                        total_dist_7d = total_dist_7d.reset_index()
+                        total_dist_30d = total_dist_30d.reset_index()
+                        
+                        # Create mappings
+                        mapping_7d = dict(zip(zip(total_dist_7d['runner_id'], total_dist_7d['date']), total_dist_7d['distance']))
+                        mapping_30d = dict(zip(zip(total_dist_30d['runner_id'], total_dist_30d['date']), total_dist_30d['distance']))
+                        
+                        # Map values
+                        df['7d_total_distance'] = [mapping_7d.get(key, np.nan) for key in df_keys]
+                        df['30d_total_distance'] = [mapping_30d.get(key, np.nan) for key in df_keys]
+                        
+                        logger.info("Created time-based total distance metrics")
+                    except Exception as e:
+                        logger.error(f"Error calculating total distance: {str(e)}")
             
-            # Special handling for total distance (sum instead of average)
-            if 'distance' in df.columns:
-                df['7d_total_distance'] = df.groupby('runner_id')['distance'] \
-                                        .rolling(window=7, min_periods=1).sum() \
-                                        .reset_index(level=0, drop=True)
+            # Count runs in the last 7 and 30 days
+            try:
+                # Create a helper dataframe with just date and runner_id
+                run_count_df = df[['runner_id', 'date']].copy()
+                run_count_df['count'] = 1  # Each row is one run
                 
-                df['30d_total_distance'] = df.groupby('runner_id')['distance'] \
-                                        .rolling(window=30, min_periods=1).sum() \
-                                        .reset_index(level=0, drop=True)
+                # Set date as index
+                run_count_df = run_count_df.set_index('date')
                 
-                logger.info("Created total distance metrics")
+                # Count runs in 7D and 30D windows
+                run_count_7d = run_count_df.groupby('runner_id')['count'] \
+                                            .rolling('7D', min_periods=1).sum() \
+                                            .reset_index()
+                
+                run_count_30d = run_count_df.groupby('runner_id')['count'] \
+                                             .rolling('30D', min_periods=1).sum() \
+                                             .reset_index()
+                
+                # Create mappings
+                mapping_7d = dict(zip(zip(run_count_7d['runner_id'], run_count_7d['date']), run_count_7d['count']))
+                mapping_30d = dict(zip(zip(run_count_30d['runner_id'], run_count_30d['date']), run_count_30d['count']))
+                
+                # Map values
+                df['7d_run_count'] = [mapping_7d.get(key, np.nan) for key in df_keys]
+                df['30d_run_count'] = [mapping_30d.get(key, np.nan) for key in df_keys]
+                
+                logger.info("Created time-based run count metrics")
+            except Exception as e:
+                logger.error(f"Error calculating run counts: {str(e)}")
             
             # Format pace metrics if they exist
-            if 'pace_numeric' in df.columns and '7d_avg_pace' in df.columns:
-                df['7d_avg_pace'] = df['7d_avg_pace'].apply(minutes_to_pace_format)
-                
-            if 'pace_numeric' in df.columns and '30d_avg_pace' in df.columns:
-                df['30d_avg_pace'] = df['30d_avg_pace'].apply(minutes_to_pace_format)
-                
-            if 'pace_numeric' in df.columns:
+            if 'pace' in df.columns:
+                if '7d_avg_pace' in df.columns:
+                    df['7d_avg_pace'] = df['7d_avg_pace'].apply(minutes_to_pace_format)
+                    
+                if '30d_avg_pace' in df.columns:
+                    df['30d_avg_pace'] = df['30d_avg_pace'].apply(minutes_to_pace_format)
+                    
                 logger.info("Formatted pace rolling averages")
-            
-            # Special handling for pace (needs to be calculated from pace_numeric)
-            logger.info("Calculating rolling average pace metrics")
-            
-            # Last 7 runs average pace
-            df['7d_avg_pace_numeric'] = df.groupby('runner_id')['pace_numeric'] \
-                                    .rolling(window=7, min_periods=1).mean() \
-                                    .reset_index(level=0, drop=True)
-            
-            # Last 30 runs average pace
-            df['30d_avg_pace_numeric'] = df.groupby('runner_id')['pace_numeric'] \
-                                     .rolling(window=30, min_periods=1).mean() \
-                                     .reset_index(level=0, drop=True)
-            
-            # Format pace into proper string format
-            df['7d_avg_pace'] = df['7d_avg_pace_numeric'].apply(minutes_to_pace_format)
-            df['30d_avg_pace'] = df['30d_avg_pace_numeric'].apply(minutes_to_pace_format)
-            
-            # Remove the numeric versions after formatting
-            df = df.drop(columns=['7d_avg_pace_numeric', '30d_avg_pace_numeric'])
-            
-            logger.info("Created and formatted rolling average pace metrics")
         
         # 12. Save the feature-enriched data
         os.makedirs(os.path.dirname(output_csv), exist_ok=True)

@@ -239,7 +239,9 @@ def get_tabular_features(df: pd.DataFrame, lags: int = 4) -> pd.DataFrame:
     logger.info("Completed tabular feature generation")
     return df
 
-def get_sequence_data(df: pd.DataFrame, window_size: int = 4) -> np.ndarray:
+def get_sequence_data(df: pd.DataFrame, window_size: int = 4, 
+                      include_targets: bool = False,
+                      min_sequence_length: int = 0) -> np.ndarray:
     """
     Returns a 3D NumPy array suitable for NN training.
     Each sequence (window) is of length 'window_size' and contains a subset of features.
@@ -247,67 +249,84 @@ def get_sequence_data(df: pd.DataFrame, window_size: int = 4) -> np.ndarray:
     Parameters:
       - df: Input DataFrame (should be sorted by 'runner_id' and 'date').
       - window_size: Number of consecutive runs in each sequence.
+      - include_targets: Whether to include target values for the next run.
+      - min_sequence_length: Minimum required runs to create a sequence (0 means no minimum).
       
     Returns:
       A 3D array of shape (num_sequences, window_size, num_features)
+      If include_targets=True, returns a tuple (sequences, targets)
     """
     logger.info("Starting sequence data generation")
     
     # Create a copy of the dataframe
     df = df.copy()
     
-    # Convert pace string to numeric for calculations if needed
+    # Select relevant features for sequences
+    numeric_features = [
+        'distance', 
+        'average_cadence', 
+        'average_heart_rate',
+        'elapsed_time',
+        'average_grade',
+        'relative_effort'
+    ]
+    
+    # Convert pace string to numeric for calculations
     if 'pace' in df.columns:
-        logger.info(f"Pace column type: {df['pace'].dtype}")
-        if df['pace'].dtype == 'object':
-            logger.info("Converting pace string to numeric for sequence data")
-            df['pace'] = df['pace'].apply(pace_to_minutes)
+        df['pace_numeric'] = df['pace'].apply(pace_to_minutes)
+        numeric_features.append('pace_numeric')
     
-    sequences = []
-    # Use numeric columns for sequences
-    feature_columns = []
+    # Filter features to only those available
+    available_features = [f for f in numeric_features if f in df.columns]
+    logger.info(f"Using features for sequences: {available_features}")
     
-    # Check for required columns and add them if they exist
-    if 'pace' in df.columns:
-        feature_columns.append('pace')
-    if 'average_cadence' in df.columns:
-        feature_columns.append('average_cadence')
-    if 'average_heart_rate' in df.columns:
-        feature_columns.append('average_heart_rate')
-    if 'distance' in df.columns:
-        feature_columns.append('distance')
+    if len(available_features) < 2:
+        logger.error("Not enough feature columns found for meaningful sequences")
+        raise ValueError("Not enough feature columns found for meaningful sequences")
     
-    logger.info(f"Using features for sequences: {feature_columns}")
+    # Create date difference column to detect gaps/missing runs
+    df['days_since_last'] = df.groupby('runner_id')['date'].diff().dt.days
     
-    if not feature_columns:
-        logger.error("No required feature columns found in the dataframe")
-        raise ValueError("No required feature columns found in the dataframe")
-    
-    # Check for NaN values in feature columns
-    for col in feature_columns:
+    # Check for NaN values
+    for col in available_features:
         na_count = df[col].isna().sum()
         if na_count > 0:
             logger.warning(f"Column {col} has {na_count} NaN values ({na_count/len(df):.1%} of data)")
+            # Fill NaNs with median (more robust than mean)
+            df[col] = df[col].fillna(df[col].median())
+    
+    sequences = []
+    targets = [] if include_targets else None
     
     # Group data by runner_id and sort by date
     logger.info(f"Creating sequences with window size {window_size}")
     for runner, group in df.groupby('runner_id'):
+        if len(group) < max(window_size, min_sequence_length):
+            logger.warning(f"Runner {runner} has only {len(group)} runs, skipping")
+            continue
+            
         group = group.sort_values('date')
-        # Fill NaN values with column mean to avoid issues in sequence creation
-        for col in feature_columns:
-            if group[col].isna().any():
-                group[col] = group[col].fillna(group[col].mean())
         
-        data = group[feature_columns].values
+        # Extract features
+        features_data = group[available_features].values
         
         # Create sliding windows
-        for i in range(len(data) - window_size + 1):
-            window = data[i:i+window_size]
+        for i in range(len(features_data) - window_size):
+            window = features_data[i:i+window_size]
             sequences.append(window)
+            
+            # If targets requested, add the next run's data
+            if include_targets:
+                next_run = features_data[i+window_size]
+                targets.append(next_run)
     
     if not sequences:
         logger.error("No sequences could be created")
         raise ValueError("No sequences could be created. Check your data and window_size.")
     
     logger.info(f"Created {len(sequences)} sequences")
+    
+    # Return sequences and targets if requested
+    if include_targets:
+        return np.array(sequences), np.array(targets)
     return np.array(sequences)

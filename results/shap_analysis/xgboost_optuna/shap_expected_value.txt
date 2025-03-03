@@ -1,0 +1,1 @@
+Expected Value (Base Value): 6.778987407684326

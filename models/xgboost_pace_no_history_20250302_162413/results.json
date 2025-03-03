@@ -1,0 +1,79 @@
+{
+  "metrics": {
+    "mae": 0.9137265632332388,
+    "rmse": 1.5022685133904432,
+    "r2": 0.5576122239026768
+  },
+  "examples": [
+    {
+      "Actual (minutes)": 6.733333333333333,
+      "Predicted (minutes)": 7.591541767120361,
+      "Actual (pace)": "6:44",
+      "Predicted (pace)": "7:35",
+      "Error (minutes)": 0.8582084337870279
+    },
+    {
+      "Actual (minutes)": 8.066666666666666,
+      "Predicted (minutes)": 8.381909370422363,
+      "Actual (pace)": "8:03",
+      "Predicted (pace)": "8:22",
+      "Error (minutes)": 0.31524270375569685
+    },
+    {
+      "Actual (minutes)": 6.416666666666667,
+      "Predicted (minutes)": 6.568637371063232,
+      "Actual (pace)": "6:25",
+      "Predicted (pace)": "6:34",
+      "Error (minutes)": 0.15197070439656546
+    },
+    {
+      "Actual (minutes)": 6.533333333333333,
+      "Predicted (minutes)": 6.776970863342285,
+      "Actual (pace)": "6:31",
+      "Predicted (pace)": "6:46",
+      "Error (minutes)": 0.24363753000895194
+    },
+    {
+      "Actual (minutes)": 8.333333333333334,
+      "Predicted (minutes)": 8.845911979675293,
+      "Actual (pace)": "8:20",
+      "Predicted (pace)": "8:50",
+      "Error (minutes)": 0.512578646341959
+    },
+    {
+      "Actual (minutes)": 7.9,
+      "Predicted (minutes)": 6.421760082244873,
+      "Actual (pace)": "7:54",
+      "Predicted (pace)": "6:25",
+      "Error (minutes)": 1.4782399177551273
+    },
+    {
+      "Actual (minutes)": 9.133333333333333,
+      "Predicted (minutes)": 9.18582534790039,
+      "Actual (pace)": "9:07",
+      "Predicted (pace)": "9:11",
+      "Error (minutes)": 0.052492014567057765
+    },
+    {
+      "Actual (minutes)": 8.933333333333334,
+      "Predicted (minutes)": 7.728944301605225,
+      "Actual (pace)": "8:56",
+      "Predicted (pace)": "7:43",
+      "Error (minutes)": 1.204389031728109
+    },
+    {
+      "Actual (minutes)": 6.55,
+      "Predicted (minutes)": 6.736758708953857,
+      "Actual (pace)": "6:32",
+      "Predicted (pace)": "6:44",
+      "Error (minutes)": 0.1867587089538576
+    },
+    {
+      "Actual (minutes)": 6.566666666666666,
+      "Predicted (minutes)": 7.39238977432251,
+      "Actual (pace)": "6:33",
+      "Predicted (pace)": "7:23",
+      "Error (minutes)": 0.8257231076558433
+    }
+  ]
+}

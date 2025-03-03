@@ -3,6 +3,7 @@ import sys
 import logging
 import argparse
 from datetime import datetime
+import pandas as pd
 import numpy as np
 from data_cleaning import clean_data
 from feature_generation import generate_features
@@ -68,20 +69,36 @@ def run_pipeline(input_csv, cleaned_csv=None, features_csv=None, tabular_csv=Non
         logger.info(f"Starting data transformations")
         
         # Load the feature-enriched data
-        import pandas as pd
         df = pd.read_csv(features_csv)
+        logger.info(f"Loaded feature data with {len(df)} rows and {len(df.columns)} columns")
+        
+        # Convert date column to datetime (needed for rolling windows)
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'])
         
         # For XGBoost, create tabular features
-        df_tabular = get_tabular_features(df, lags=4)
-        df_tabular.to_csv(tabular_csv, index=False)
-        logger.info(f"Tabular features created, saved to {tabular_csv}")
+        try:
+            logger.info("Generating tabular features for XGBoost")
+            df_tabular = get_tabular_features(df, lags=4)
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(tabular_csv), exist_ok=True)
+            df_tabular.to_csv(tabular_csv, index=False)
+            logger.info(f"Tabular features created, saved to {tabular_csv}")
+        except Exception as e:
+            logger.error(f"Error creating tabular features: {str(e)}")
+            raise
         
         # For NN, create sequence windows
-        sequence_array = get_sequence_data(df, window_size=4)
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(sequence_npy), exist_ok=True)
-        np.save(sequence_npy, sequence_array)
-        logger.info(f"Sequence data created, saved to {sequence_npy}")
+        try:
+            logger.info("Generating sequence data for neural networks")
+            sequence_array = get_sequence_data(df, window_size=4)
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(sequence_npy), exist_ok=True)
+            np.save(sequence_npy, sequence_array)
+            logger.info(f"Sequence data created, saved to {sequence_npy}")
+        except Exception as e:
+            logger.error(f"Error creating sequence data: {str(e)}")
+            raise
         
         # Calculate runtime and return success
         end_time = datetime.now()

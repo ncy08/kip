@@ -1,25 +1,37 @@
-# Running Data Pipeline
+# Running Data Pipeline & Pace Prediction
 
-A data processing pipeline for runner data that cleans, transforms, and prepares running data for analysis and modeling.
+A comprehensive toolkit for runner data that cleans, transforms, prepares, and models running data for analysis and pace prediction.
 
 ## Project Overview
 
-This pipeline takes raw CSV files containing running data, cleans and validates the data, generates useful features, and prepares it for machine learning models like XGBoost. The system is designed to be repeatable, automated, and extensible.
+This project features:
+
+1. A data processing pipeline that cleans and validates running data
+2. Feature engineering to create useful metrics from raw activity data
+3. Multiple XGBoost models to predict running pace with different feature sets
+4. Visualization tools to understand feature importance and model performance
 
 ## Project Structure
 
 ```
 project-root/
 ├── data/
-│   ├── raw_data/         # Place new CSV files here
-│   └── processed_data/   # Cleaned and feature-engineered files
+│   ├── raw_data/          # Place new CSV files here
+│   └── processed_data/    # Cleaned and feature-engineered files
 ├── scripts/
-│   ├── data_cleaning.py  # Data validation and cleaning
+│   ├── data_cleaning.py   # Data validation and cleaning
 │   ├── feature_generation.py  # Feature engineering
-│   └── pipeline.py       # Main orchestration script
-├── models/               # Trained models will be stored here
-├── docs/                 # Documentation
-└── README.md             # Project description and instructions
+│   ├── pipeline.py        # Main orchestration script
+│   ├── train_xgboost.py   # Base pace prediction model
+│   ├── train_xgboost_no_pace_history.py  # Model without pace history
+│   └── train_xgboost_no_pace_no_time.py  # Model without pace or direct time
+├── models/                # Trained models stored here
+│   ├── xgboost_pace_TIMESTAMP/  # Base model
+│   ├── xgboost_pace_no_history_TIMESTAMP/  # No pace history model
+│   └── xgboost_pace_no_direct_time_TIMESTAMP/  # No pace/time model
+├── results/               # Feature importance plots and metrics
+├── docs/                  # Documentation
+└── README.md              # Project description and instructions
 ```
 
 ## Setup Instructions
@@ -62,20 +74,69 @@ project-root/
 
 ## Usage
 
-### Basic Usage
+### Data Processing Pipeline
 
 1. Place your raw CSV file in the `data/raw_data/` directory
 2. Run the pipeline:
    ```
-   python scripts/pipeline.py data/raw_data/your_file.csv
+   python -m scripts.pipeline data/raw_data/your_file.csv
    ```
 3. Find the processed output in `data/processed_data/`
 
-### Pipeline Steps
+### Pace Prediction Models
+
+#### 1. Base Model (using all features)
+
+Best performance for pure prediction accuracy:
+
+```
+python -m scripts.train_xgboost
+```
+
+#### 2. No Pace History Model
+
+Predicts pace without using historical pace data:
+
+```
+python -m scripts.train_xgboost_no_pace_history
+```
+
+#### 3. No Pace/No Direct Time Model
+
+Predicts pace without using pace history or direct time metrics:
+
+```
+python -m scripts.train_xgboost_no_pace_no_time
+```
+
+### Model Performance & Insights
+
+Our experiments revealed:
+
+1. **Best Predictors of Pace**:
+
+   - With all features: Recent pace history (7-day avg pace)
+   - Without pace history: Current elapsed time
+   - Without pace & direct time: 7-day average elapsed time + heart rate
+
+2. **Performance Metrics**:
+
+   - Base model: MAE ~0.76 min, R² ~0.59
+   - No pace history: MAE ~0.91 min, R² ~0.56
+   - No pace/direct time: MAE higher, R² lower
+
+3. **Key Insights**:
+   - Heart rate becomes much more important when pace history is unavailable
+   - 7-day average metrics strongly predict performance
+   - Training consistency (30d_run_count) is a moderate predictor
+
+## Pipeline Steps
 
 1. **Data Cleaning**: Validates data, handles missing values, and removes anomalies
 2. **Feature Generation**: Creates derived features like rolling averages, lagged values, and cumulative metrics
 3. **Output**: Produces cleaned and feature-rich datasets ready for analysis or modeling
+4. **Model Training**: Builds XGBoost regression models for pace prediction
+5. **Evaluation**: Generates metrics, example predictions, and feature importance plots
 
 ## Data Format
 
@@ -85,9 +146,11 @@ The expected input CSV should contain the following columns:
 - Date
 - Distance (miles/km)
 - Time (duration)
-- Heart Rate (optional)
+- Heart Rate
 - Pace
-- [Other relevant metrics]
+- Cadence (optional)
+- Elevation data (optional)
+- Weather conditions (optional)
 
 ## Implementation Guide
 
@@ -131,109 +194,62 @@ def generate_features(cleaned_csv: str, output_csv: str):
     df = pd.read_csv(cleaned_csv)
     df.sort_values(by=['runner_id', 'date'], inplace=True)
 
-    # Example: Create a lagged feature for pace
-    df['pace_t-1'] = df.groupby('runner_id')['pace'].shift(1)
+    # Create a lagged feature for pace
+    df['pace_previous'] = df.groupby('runner_id')['pace'].shift(1)
 
-    # Example: 7-day rolling average if your data is daily
-    # df['7d_avg_pace'] = (df.groupby('runner_id')['pace']
-    #                         .rolling(7, min_periods=1).mean()
-    #                         .reset_index(drop=True))
+    # Create rolling averages
+    df['7d_avg_pace'] = (df.groupby('runner_id')['pace']
+                            .rolling(7, min_periods=1).mean()
+                            .reset_index(drop=True))
+
+    # Create training volume metrics
+    df['7d_run_count'] = (df.groupby('runner_id')['date']
+                            .rolling(7, min_periods=1).count()
+                            .reset_index(drop=True))
 
     df.to_csv(output_csv, index=False)
 ```
 
-#### pipeline.py
+#### train_xgboost.py (excerpt)
 
 ```python
-# pipeline.py
-import os
-from data_cleaning import clean_data
-from feature_generation import generate_features
+# train_xgboost.py
+import xgboost as xgb
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error, r2_score
 
-def run_pipeline(input_csv: str, cleaned_csv: str, features_csv: str):
-    clean_data(input_csv, cleaned_csv)
-    generate_features(cleaned_csv, features_csv)
-    print("Pipeline completed.")
+def train_model(X_train, y_train, X_val, y_val):
+    """Train XGBoost model"""
 
-if __name__ == "__main__":
-    # Example usage:
-    input_path = "data/raw_data/runs.csv"
-    cleaned_path = "data/processed_data/runs_cleaned.csv"
-    features_path = "data/processed_data/runs_features.csv"
+    params = {
+        'objective': 'reg:squarederror',
+        'eval_metric': 'mae',
+        'max_depth': 6,
+        'eta': 0.1
+    }
 
-    # Make sure these directories exist
-    os.makedirs(os.path.dirname(cleaned_path), exist_ok=True)
-    os.makedirs(os.path.dirname(features_path), exist_ok=True)
+    dtrain = xgb.DMatrix(X_train, label=y_train)
+    dval = xgb.DMatrix(X_val, label=y_val)
 
-    run_pipeline(input_path, cleaned_path, features_path)
+    model = xgb.train(
+        params,
+        dtrain,
+        num_boost_round=1000,
+        evals=[(dtrain, 'train'), (dval, 'val')],
+        early_stopping_rounds=50,
+        verbose_eval=100
+    )
+
+    return model
 ```
-
-### Testing the Pipeline
-
-1. Place a sample CSV in `data/raw_data/runs.csv`
-2. Run the pipeline:
-   ```
-   cd project-root
-   source venv/bin/activate
-   python scripts/pipeline.py
-   ```
-3. Check `data/processed_data/` for the output files
-
-## Automation Options
-
-### Command-Line / Cron Job
-
-Schedule the pipeline to run at specific intervals using cron:
-
-```
-cd /path/to/project-root && source venv/bin/activate && python scripts/pipeline.py
-```
-
-### Simple API Integration
-
-Create a minimal Flask or FastAPI server with an upload endpoint:
-
-```python
-from flask import Flask, request
-from scripts.pipeline import run_pipeline
-import os
-
-app = Flask(__name__)
-
-@app.route("/upload", methods=["POST"])
-def upload():
-    file = request.files["csv_file"]
-    raw_path = os.path.join("data/raw_data", file.filename)
-    file.save(raw_path)
-
-    cleaned_path = "data/processed_data/runs_cleaned.csv"
-    features_path = "data/processed_data/runs_features.csv"
-
-    run_pipeline(raw_path, cleaned_path, features_path)
-    return "File uploaded and pipeline run!"
-
-if __name__ == "__main__":
-    app.run(port=5000, debug=True)
-```
-
-### Cloud Functions
-
-Deploy as a serverless function triggered by file uploads to cloud storage.
-
-## Best Practices for Repeatability
-
-1. **Documentation**: Keep this README updated with any changes to the pipeline
-2. **Environment Management**: Use `pip freeze > requirements.txt` to capture dependencies
-3. **Logging & Error Handling**: Add robust error handling to all scripts
-4. **Data Validation**: Ensure input CSVs meet expected format requirements
-5. **Version Control**: Use Git for code and consider DVC for data versioning
 
 ## Future Enhancements
 
-- Model training integration
-- Database storage instead of CSV files
-- Web interface for file uploads and results visualization
-- Containerization with Docker
+- Web dashboard for visualizing pace predictions
+- Integration with Strava API for automatic data updates
+- Model hyperparameter tuning for improved accuracy
+- Weather API integration for environmental factors
+- Personalized pace prediction based on target race events
 
 ## Contributing
 
@@ -246,3 +262,108 @@ Deploy as a serverless function triggered by file uploads to cloud storage.
 ## License
 
 [Your chosen license]
+
+# Running Performance Analysis with SHAP
+
+This repository provides tools for analyzing running performance data using SHAP (SHapley Additive exPlanations) with XGBoost models.
+
+## Overview
+
+The core functionality is implemented in `shap_analysis.py`, which:
+
+1. Extracts the latest run from your dataset
+2. Uses SHAP TreeExplainer to calculate SHAP values for the run
+3. Generates a ranked list of top contributors and their impact on pace
+4. Formats a human-readable improvement report with actionable insights
+
+## Requirements
+
+```
+pandas
+numpy
+xgboost
+shap
+matplotlib
+```
+
+## Usage
+
+Assuming you already have a trained XGBoost model and a dataset of run information:
+
+```python
+from shap_analysis import run_shap_analysis
+import xgboost as xgb
+import pandas as pd
+
+# Load your trained model
+model = xgb.Booster()
+model.load_model('path/to/your/model.json')
+
+# Load your running data
+data = pd.read_csv('your_running_data.csv')
+
+# Run the analysis
+results = run_shap_analysis(
+    model=model,
+    data=data,
+    baseline_pace=5.0,  # Your expected pace (e.g., min/km)
+    top_n=5  # Show top 5 features
+)
+
+# Print the summary report
+print(results['report']['summary'])
+for rec in results['report']['recommendations']:
+    print(f"- {rec}")
+
+# Display visualizations
+import matplotlib.pyplot as plt
+plt.show()
+```
+
+See `run_analysis_example.py` for a complete working example.
+
+## Features
+
+- **SHAP Analysis**: Uses TreeExplainer to provide accurate feature importance values
+- **Run Extraction**: Automatically identifies and analyzes your most recent run
+- **Prioritized Insights**: Ranks features by their impact on your running pace
+- **Actionable Recommendations**: Generates specific suggestions to improve performance
+- **Visualizations**: Creates SHAP summary and beeswarm plots to visualize feature impacts
+
+## Example Output
+
+The analysis provides:
+
+1. A summary of factors increasing or decreasing your pace
+2. Ranked list of top contributors and their impact
+3. Specific recommendations for improvement
+4. Visualizations showing feature importance and impact direction
+
+## Adding to Your Pipeline
+
+To integrate this analysis into your existing pipeline:
+
+1. Ensure your model is trained and saved in a format loadable by XGBoost
+2. Prepare your run data with appropriate features
+3. Call `run_shap_analysis()` with your model and data
+4. Use the results to provide insights to the runner
+
+## Customization
+
+You can customize the analysis by:
+
+- Adjusting the `top_n` parameter to show more or fewer features
+- Providing a specific `baseline_pace` or letting it use the model's expected value
+- Modifying the visualization settings
+- Extending the report generation to include additional metrics
+
+## How It Works
+
+The SHAP analysis works by:
+
+1. Using TreeExplainer to decompose the model's prediction into contributions from each feature
+2. Calculating the magnitude and direction of each feature's impact on pace
+3. Ranking features by their absolute contribution
+4. Generating insights based on whether features increase or decrease pace
+
+This provides a data-driven approach to understanding what specific factors are most affecting your running performance.

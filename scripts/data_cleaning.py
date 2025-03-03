@@ -139,7 +139,21 @@ def clean_data(input_csv: str, output_csv: str):
         # 2. Map Strava-like columns to standardized names
         df, column_mapping = map_strava_columns(df)
         
-        # 3. Check for essential columns
+        # 3. Filter to keep only Run activities
+        if 'activity_type' in df.columns:
+            # Store the original count to report how many were filtered out
+            original_count = len(df)
+            
+            # Filter for only 'Run' activities (case insensitive)
+            df = df[df['activity_type'].str.lower() == 'run']
+            
+            # Report how many activities were removed
+            filtered_count = original_count - len(df)
+            logger.info(f"Filtered out {filtered_count} non-run activities. Kept {len(df)} run activities.")
+        else:
+            logger.warning("No 'activity_type' column found. Could not filter for run activities.")
+        
+        # 4. Check for essential columns
         essential_columns = ['date', 'distance', 'elapsed_time']
         missing_essential = [col for col in essential_columns if col not in df.columns]
         
@@ -147,7 +161,7 @@ def clean_data(input_csv: str, output_csv: str):
             logger.error(f"Missing essential columns: {missing_essential}")
             raise ValueError(f"Input CSV is missing essential columns: {missing_essential}")
         
-        # 4. Keep only relevant columns
+        # 5. Keep only relevant columns
         relevant_columns = [
             # Basic run details
             'activity_id', 'runner_id', 'date', 'activity_type', 'distance', 
@@ -173,7 +187,7 @@ def clean_data(input_csv: str, output_csv: str):
         # Keep only the relevant columns
         df = df[columns_to_keep]
         
-        # 5. Convert date to datetime
+        # 6. Convert date to datetime
         if 'date' in df.columns:
             try:
                 df['date'] = pd.to_datetime(df['date'])
@@ -181,7 +195,7 @@ def clean_data(input_csv: str, output_csv: str):
             except Exception as e:
                 logger.warning(f"Could not convert date column to datetime: {e}")
         
-        # 6. Ensure numeric columns are numeric
+        # 7. Ensure numeric columns are numeric
         numeric_columns = [
             'distance', 'elapsed_time', 'moving_time', 'max_heart_rate', 
             'average_heart_rate', 'max_speed', 'average_speed', 'pace', 
@@ -197,7 +211,7 @@ def clean_data(input_csv: str, output_csv: str):
                 except Exception as e:
                     logger.warning(f"Could not convert {col} to numeric: {e}")
         
-        # 7. Basic validation - remove rows with impossible values
+        # 8. Basic validation - remove rows with impossible values
         original_row_count = len(df)
         
         # Filter out impossible distances (e.g., negative or > 100 miles/km)
@@ -218,7 +232,7 @@ def clean_data(input_csv: str, output_csv: str):
         if rows_removed > 0:
             logger.info(f"Removed {rows_removed} rows with invalid values")
         
-        # 8. Handle missing values
+        # 9. Handle missing values
         # For heart rate, we can use forward fill within each runner's data
         if 'average_heart_rate' in df.columns and 'runner_id' in df.columns:
             # Count missing values before filling
@@ -240,16 +254,16 @@ def clean_data(input_csv: str, output_csv: str):
                     df['average_heart_rate'].fillna(median_hr, inplace=True)
                     logger.info(f"Filled {remaining_missing} remaining missing heart rate values with median ({median_hr})")
         
-        # 9. Create a runner_id if it doesn't exist
+        # 10. Create a runner_id if it doesn't exist
         if 'runner_id' not in df.columns and 'activity_id' in df.columns:
             logger.info("Creating a default runner_id since none was found")
             df['runner_id'] = 'default_runner'
         
-        # 10. Ensure runner_id is a string (for consistent grouping later)
+        # 11. Ensure runner_id is a string (for consistent grouping later)
         if 'runner_id' in df.columns:
             df['runner_id'] = df['runner_id'].astype(str)
         
-        # 11. Save the cleaned data
+        # 12. Save the cleaned data
         os.makedirs(os.path.dirname(output_csv), exist_ok=True)
         df.to_csv(output_csv, index=False)
         logger.info(f"Saved cleaned data to {output_csv} with {len(df)} rows and {len(df.columns)} columns")
