@@ -13,6 +13,7 @@ import xgboost as xgb
 import shap
 import matplotlib.pyplot as plt
 from datetime import datetime
+import math
 
 # Define the paths
 MODEL_PATH = "models/xgboost_optuna/model.json"
@@ -169,36 +170,242 @@ def load_feature_names():
     
     return []
 
+def generate_enhanced_shap_report(shap_df, 
+                                 negative_label="speeds up pace", 
+                                 positive_label="slows pace", 
+                                 metric_name="pace",
+                                 top_n=10,
+                                 is_latest_run=False):
+    """
+    Generates a textual SHAP-based report for a set of features/metrics.
+    :param shap_df: A pandas DataFrame with at least columns:
+        - 'feature': the name of the feature
+        - 'mean_shap_value': average SHAP (negative -> speed up, positive -> slow down)
+        - 'importance': absolute SHAP magnitude
+        - 'avg_value': average of that feature across all runs (optional, for context)
+        - 'std_value': standard deviation of that feature (optional)
+    :param negative_label: Phrase used when SHAP is negative
+    :param positive_label: Phrase used when SHAP is positive
+    :param metric_name: Name of the metric being predicted (e.g. "pace", "time")
+    :param top_n: How many top features to highlight.
+    :param is_latest_run: If True, formats report for latest run; if False, for all runs.
+    :return: A string containing a structured, improved SHAP summary.
+    """
+    
+    # Copy to avoid modifying the original
+    df = shap_df.copy()
+    
+    # Sort by absolute SHAP importance
+    df.sort_values("importance", ascending=False, inplace=True)
+    
+    # Create a header
+    report_lines = []
+    report_lines.append("\n" + "=" * 50)
+    if is_latest_run:
+        report_lines.append(f"LATEST RUN ANALYSIS REPORT")
+    else:
+        report_lines.append(f"ALL RUNS ANALYSIS REPORT") 
+    report_lines.append("=" * 50)
+    report_lines.append("")
+    
+    # Add date information
+    report_lines.append(f"Date of Analysis: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if "run_date" in df.columns and not df["run_date"].isna().all():
+        report_lines.append(f"Run Date: {df['run_date'].iloc[0]}")
+    if not is_latest_run and "num_runs" in df.columns:
+        report_lines.append(f"Number of Runs Analyzed: {df['num_runs'].iloc[0]}")
+    report_lines.append("")
+    
+    # Provide an introduction / disclaimers if it's not a latest run report
+    if not is_latest_run:
+        report_lines.append("INTRODUCTION")
+        report_lines.append("----------------------------------------------")
+        report_lines.append(
+            "This report summarizes how each feature influences your predicted "
+            f"{metric_name}. Positive values generally mean the feature is associated "
+            f"with a higher (slower) {metric_name}, and negative values mean the feature is "
+            f"associated with a lower (faster) {metric_name}.\n"
+            "Note: SHAP shows correlations the model has learned, not guaranteed causation. "
+        )
+        report_lines.append("")
+    
+    # Summarize top features
+    report_lines.append("Top Contributing Factors:")
+
+    # List only top_n features
+    top_features = df.head(top_n)
+    
+    # Lists to store positive and negative factors
+    positive_factors = []  # slowing pace
+    negative_factors = []  # speeding up pace
+    total_positive_impact = 0
+    total_negative_impact = 0
+    
+    for i, row in enumerate(top_features.itertuples(), start=1):
+        feat = row.feature
+        mean_shap = getattr(row, "mean_shap_value", 0.0)
+        importance = getattr(row, "importance", 0.0)
+        
+        # Try to get optional stats
+        avg_val = getattr(row, "avg_value", None)
+        std_val = getattr(row, "std_value", None)
+        min_val = getattr(row, "min_value", None)
+        max_val = getattr(row, "max_value", None)
+        
+        # Convert to seconds for interpretation
+        seconds_impact = mean_shap * 60
+        
+        # Apply rounding logic - round positive values up, negative values down
+        if mean_shap > 0:
+            seconds_rounded = math.ceil(seconds_impact)
+            direction_word = positive_label
+            direction_symbol = "↑"
+            positive_factors.append(feat)
+            total_positive_impact += seconds_rounded
+        else:
+            seconds_rounded = math.floor(seconds_impact)
+            direction_word = negative_label
+            direction_symbol = "↓"
+            negative_factors.append(feat)
+            total_negative_impact += abs(seconds_rounded)
+        
+        # Create a detailed feature summary
+        feature_summary = [
+            f"{i}. {feat} ({direction_symbol}): Importance score {importance:.4f}"
+        ]
+        
+        # If we have average stats, mention them
+        if is_latest_run:
+            if avg_val is not None:
+                feature_summary.append(f"   Current value: {avg_val}")
+            feature_summary.append(f"   Impact: {direction_word.split(' ')[0]} pace by {abs(mean_shap):.4f}")
+        else:
+            if avg_val is not None and std_val is not None:
+                feature_summary.append(f"   Average value: {avg_val:.4f} (std: {std_val:.4f})")
+                if min_val is not None and max_val is not None:
+                    feature_summary.append(f"   Range: {min_val:.4f} to {max_val:.4f}")
+            feature_summary.append(f"   Impact: {direction_word} by {abs(mean_shap):.4f} on average")
+        
+        report_lines.append("\n".join(feature_summary))
+        report_lines.append("")  # blank line for spacing
+
+    # Add section header for interpretations
+    if is_latest_run:
+        report_lines.append("\nLocal SHAP Analysis (Per-Run Explanations)")
+    else:
+        report_lines.append("\nGlobal SHAP Analysis (Across All Runs)")
+    report_lines.append("=" * 40)
+    
+    if is_latest_run:
+        report_lines.append("This analyzes SHAP values for a single run to see what impacted its predicted pace.\n")
+    else:
+        report_lines.append("This analyzes SHAP values across your entire dataset to find patterns that hold consistently over time.\n")
+    
+    # Add interpretations
+    report_lines.append("Interpretations:")
+    
+    for i, row in enumerate(top_features.itertuples(), start=1):
+        feat = row.feature
+        mean_shap = getattr(row, "mean_shap_value", 0.0)
+        
+        # Convert to seconds for interpretation
+        seconds_impact = mean_shap * 60
+        
+        # Apply rounding logic - round positive values up, negative values down
+        if mean_shap > 0:
+            seconds_rounded = math.ceil(seconds_impact)
+            if is_latest_run:
+                report_lines.append(f"• {feat} slowed this run by +{seconds_rounded} seconds/mile.")
+            else:
+                report_lines.append(f"• {feat} typically slows pace by +{seconds_rounded} seconds/mile on average.")
+        else:
+            seconds_rounded = abs(math.floor(seconds_impact))
+            if is_latest_run:
+                report_lines.append(f"• {feat} sped up this run by -{seconds_rounded} seconds/mile.")
+            else:
+                report_lines.append(f"• {feat} typically speeds up runs by -{seconds_rounded} seconds/mile on average.")
+    
+    # Add summary statements
+    report_lines.append("")
+    
+    if negative_factors:
+        negative_factors_text = ", ".join(negative_factors[:-1])
+        if len(negative_factors) > 1:
+            negative_factors_text += f" & {negative_factors[-1]}"
+        else:
+            negative_factors_text = negative_factors[0]
+            
+        if is_latest_run:
+            report_lines.append(f"• {negative_factors_text} sped up this run by {total_negative_impact} seconds total.")
+        else:
+            report_lines.append(f"• {negative_factors_text} typically speed up your runs by {total_negative_impact} seconds on average.")
+    
+    if positive_factors:
+        positive_factors_text = ", ".join(positive_factors[:-1])
+        if len(positive_factors) > 1:
+            positive_factors_text += f" & {positive_factors[-1]}"
+        else:
+            positive_factors_text = positive_factors[0]
+            
+        if is_latest_run:
+            report_lines.append(f"• {positive_factors_text} slowed down this run by {total_positive_impact} seconds total.")
+        else:
+            report_lines.append(f"• {positive_factors_text} typically slow down your runs by {total_positive_impact} seconds on average.")
+    
+    report_lines.append("")
+    
+    # Add explanatory note about SHAP values
+    if is_latest_run:
+        report_lines.append("• SHAP values quantify exactly how much each factor is contributing to your pace for this specific run.")
+    else:
+        report_lines.append("• The top features here are the ones that matter most across all runs.")
+    report_lines.append("• Positive SHAP values indicate factors that slow you down, negative values indicate factors that speed you up.")
+    
+    # Add recommendations for latest run
+    if is_latest_run:
+        report_lines.append("\nRecommendations:")
+        for i, row in enumerate(top_features.itertuples(), start=1):
+            feat = row.feature
+            mean_shap = getattr(row, "mean_shap_value", 0.0)
+            
+            if mean_shap > 0:
+                report_lines.append(f"• Consider decreasing '{feat}' to improve pace")
+            else:
+                report_lines.append(f"• Consider increasing '{feat}' to improve pace")
+    else:
+        # Add actionable suggestions for all runs analysis
+        report_lines.append("\nACTIONABLE SUGGESTIONS")
+        report_lines.append("----------------------------------------------")
+        suggestions = [
+            "• Focus on the high-impact positive SHAP features (which slow you down) if you want to improve speed.",
+            "• Reinforce or maintain the negative SHAP features (which help you run faster).",
+            "• Track changes over time to see if modifications align with improved performance.",
+            "• Remember that correlation does not imply causation—use training experiments to validate these findings."
+        ]
+        report_lines.extend(suggestions)
+    
+    # Join lines and return the report
+    return "\n".join(report_lines)
+
 def analyze_dataset(model, data, date_column='date', do_display=True):
-    """Analyze the entire dataset."""
+    """Analyze the entire dataset using SHAP."""
+    print(f"Analyzing entire dataset")
     
     # Create output directory
     output_path = ALL_OUTPUT_DIR
     os.makedirs(output_path, exist_ok=True)
     
-    # Prepare data for SHAP analysis
-    X = data.drop('pace', axis=1)
-    y = data['pace']
+    # Prepare features
+    X, y = prepare_features(data, date_column)
+    feature_names = X.columns.tolist()
     
-    # Add missing features 
-    model_features = model.feature_names
-    if model_features is None:
-        print("Warning: Model has no feature names, using data columns")
-        model_features = X.columns.tolist()
-        
-    missing_features = [f for f in model_features if f not in X.columns]
-    print(f"Using {len(model_features) - len(missing_features)} features from model, added {len(missing_features)} missing features")
+    print(f"Using {len(feature_names)} features for SHAP analysis")
     
-    for f in missing_features:
-        X[f] = 0
-        
-    # Ensure X has all the features in the right order
-    X = X[model_features]
-    print(f"Using {X.shape[1]} features for SHAP analysis")
-    
-    # Run SHAP analysis
+    # Calculate SHAP values
     explainer = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(X)
+    expected_value = explainer.expected_value
+    print(f"Base value (expected pace): {expected_value}")
     
     # Create visualizations
     print("Generating visualizations for entire dataset...")
@@ -208,61 +415,59 @@ def analyze_dataset(model, data, date_column='date', do_display=True):
     shap.summary_plot(shap_values, X, plot_type="bar", show=False)
     plt.title("Feature Importance (All Runs)")
     plt.tight_layout()
-    bar_plot_path = os.path.join(output_path, "feature_importance_bar_all_runs.png")
-    plt.savefig(bar_plot_path)
+    plt.savefig(os.path.join(output_path, "feature_importance_bar_all_runs.png"))
     plt.close()
-    print(f"Saved bar plot to {bar_plot_path}")
+    print(f"Saved bar plot to {os.path.join(output_path, 'feature_importance_bar_all_runs.png')}")
     
     # Dot plot
     plt.figure(figsize=(12, 8))
-    shap.summary_plot(shap_values, X, plot_type="dot", max_display=15, show=False)
+    shap.summary_plot(shap_values, X, plot_type="dot", show=False)
     plt.title("Feature Impact (All Runs)")
     plt.tight_layout()
-    dot_plot_path = os.path.join(output_path, "feature_impact_dot_all_runs.png")
-    plt.savefig(dot_plot_path)
+    plt.savefig(os.path.join(output_path, "feature_impact_dot_all_runs.png"))
     plt.close()
-    print(f"Saved dot plot to {dot_plot_path}")
+    print(f"Saved dot plot to {os.path.join(output_path, 'feature_impact_dot_all_runs.png')}")
     
-    # Save feature importance to CSV
-    feature_importance = pd.DataFrame({
-        'feature': X.columns.tolist(),
-        'importance': np.abs(shap_values).mean(0),
-        'mean_shap_value': shap_values.mean(0)
-    })
-    feature_importance = feature_importance.sort_values('importance', ascending=False)
-    csv_path = os.path.join(output_path, "feature_importance_all_runs.csv")
-    feature_importance.to_csv(csv_path, index=False)
-    print(f"Saved feature importance to {csv_path}")
+    # Create feature importance DataFrame
+    feature_importance = {
+        'feature': [],
+        'importance': [],
+        'mean_shap_value': [],
+        'avg_value': [],
+        'std_value': [],
+        'min_value': [],
+        'max_value': [],
+        'num_runs': []
+    }
     
-    # Generate report for all runs analysis
-    report_text = "\n" + "=" * 50 + "\n"
-    report_text += "ALL RUNS ANALYSIS REPORT\n"
-    report_text += "=" * 50 + "\n\n"
+    for i, name in enumerate(feature_names):
+        feature_importance['feature'].append(name)
+        feature_importance['importance'].append(np.abs(shap_values[:, i]).mean())
+        feature_importance['mean_shap_value'].append(shap_values[:, i].mean())
+        feature_importance['avg_value'].append(X[name].mean())
+        feature_importance['std_value'].append(X[name].std())
+        feature_importance['min_value'].append(X[name].min())
+        feature_importance['max_value'].append(X[name].max())
+        feature_importance['num_runs'].append(len(X))
     
-    report_text += "Date of Analysis: " + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + "\n"
-    report_text += f"Number of Runs Analyzed: {data.shape[0]}\n\n"
+    feature_importance_df = pd.DataFrame(feature_importance)
     
-    report_text += "Top Contributing Factors:\n"
-    top_n = 10  # Show top 10 features
-    for i, (_, row) in enumerate(feature_importance.head(top_n).iterrows(), 1):
-        feature = row['feature']
-        importance = row['importance']
-        mean_shap = row['mean_shap_value']
-        
-        # Determine direction of impact
-        impact = "increasing" if mean_shap > 0 else "decreasing"
-        direction = "↑" if mean_shap > 0 else "↓"
-        
-        # Get feature statistics
-        feature_mean = X[feature].mean()
-        feature_std = X[feature].std() 
-        feature_min = X[feature].min()
-        feature_max = X[feature].max()
-        
-        report_text += f"{i}. {feature} ({direction}): Importance score {importance:.4f}\n"
-        report_text += f"   Average value: {feature_mean:.4f} (std: {feature_std:.4f})\n"
-        report_text += f"   Range: {feature_min:.4f} to {feature_max:.4f}\n"
-        report_text += f"   Impact: {impact} pace by {abs(mean_shap):.4f} on average\n\n"
+    # Sort by importance
+    feature_importance_df = feature_importance_df.sort_values('importance', ascending=False)
+    
+    # Save to CSV
+    feature_importance_df.to_csv(os.path.join(output_path, "feature_importance_all_runs.csv"), index=False)
+    print(f"Saved feature importance to {os.path.join(output_path, 'feature_importance_all_runs.csv')}")
+    
+    # Generate enhanced report using the new function
+    report_text = generate_enhanced_shap_report(
+        feature_importance_df,
+        negative_label="speeds up runs",
+        positive_label="slows pace",
+        metric_name="pace",
+        top_n=10,
+        is_latest_run=False
+    )
     
     # Save report
     report_path = os.path.join(output_path, "all_runs_analysis.md")
@@ -319,53 +524,36 @@ def analyze_latest_run(model, data, date_column='date', do_display=True):
     expected_value = explainer.expected_value
     print(f"Base value (expected pace): {expected_value}")
     
-    # Create the feature importance DataFrame
-    feature_importance = pd.DataFrame({
-        'feature': feature_names,
-        'importance': np.abs(shap_values).mean(0),
-        'mean_shap_value': shap_values.mean(0)
-    })
+    # Create feature importance DataFrame
+    feature_importance = {
+        'feature': [],
+        'importance': [],
+        'mean_shap_value': [],
+        'avg_value': [],
+        'run_date': []
+    }
     
-    # Sort by importance
-    feature_importance = feature_importance.sort_values('importance', ascending=False)
-    
-    # Generate report
-    report_text = "\n" + "=" * 50 + "\n"
-    report_text += "LATEST RUN ANALYSIS REPORT\n"
-    report_text += "=" * 50 + "\n\n"
-    
-    report_text += "Date of Analysis: " + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + "\n"
-    if date_column in latest_run.columns:
-        report_text += "Run Date: " + str(latest_run[date_column].iloc[0]) + "\n\n"
-    
-    report_text += "Top Contributing Factors:\n"
-    top_n = 5  # Show top 5 features
-    for i, (_, row) in enumerate(feature_importance.head(top_n).iterrows(), 1):
-        feature = row['feature']
-        importance = row['importance']
-        mean_shap = row['mean_shap_value']
-        
-        # Determine direction of impact
-        impact = "increasing" if mean_shap > 0 else "decreasing"
-        direction = "↑" if mean_shap > 0 else "↓"
-        
-        # Get feature value for this run
-        feature_value = X[feature].iloc[0]
-        
-        report_text += f"{i}. {feature} ({direction}): Importance score {importance:.4f}\n"
-        report_text += f"   Current value: {feature_value}\n"
-        report_text += f"   Impact: {impact} pace by {abs(mean_shap):.4f}\n\n"
-    
-    # Generate recommendations
-    report_text += "Recommendations:\n"
-    for i, (_, row) in enumerate(feature_importance.head(top_n).iterrows(), 1):
-        feature = row['feature']
-        mean_shap = row['mean_shap_value']
-        
-        if mean_shap > 0:
-            report_text += f"• Consider decreasing '{feature}' to improve pace\n"
+    for i, name in enumerate(feature_names):
+        feature_importance['feature'].append(name)
+        feature_importance['importance'].append(abs(shap_values[0][i]))
+        feature_importance['mean_shap_value'].append(shap_values[0][i])
+        feature_importance['avg_value'].append(X[name].iloc[0])
+        if date_column in latest_run.columns:
+            feature_importance['run_date'].append(latest_run[date_column].iloc[0])
         else:
-            report_text += f"• Consider increasing '{feature}' to improve pace\n"
+            feature_importance['run_date'].append(None)
+    
+    feature_importance_df = pd.DataFrame(feature_importance)
+    
+    # Generate enhanced report using the new function
+    report_text = generate_enhanced_shap_report(
+        feature_importance_df,
+        negative_label="speeds up pace",
+        positive_label="slows pace",
+        metric_name="pace",
+        top_n=5,
+        is_latest_run=True
+    )
     
     # Save report to file
     report_path = os.path.join(output_path, "latest_run_analysis.md")
@@ -375,9 +563,9 @@ def analyze_latest_run(model, data, date_column='date', do_display=True):
     
     # Save feature importance to CSV
     csv_path = os.path.join(output_path, "feature_importance_latest_run.csv")
-    feature_importance.to_csv(csv_path, index=False)
+    feature_importance_df.to_csv(csv_path, index=False)
     print(f"Saved feature importance to {csv_path}")
-    
+            
     # Create visualizations
     print("Generating visualizations for latest run...")
     
@@ -460,6 +648,6 @@ def main():
         return 1
     
     return 0
-
+    
 if __name__ == "__main__":
     main() 
